@@ -41,3 +41,24 @@ https://trackfyp-backend.onrender.com/api/download?url=<TIKTOK_VIDEO_LINK>
 Render ka free tier 15 minute tak use na hone par server ko "so" deta hai.
 Agli request par wapis uthne mein 20-30 second lag sakte hain — ye normal hai,
 koi masla nahi.
+
+## Gemini API Key Add Karna (Premium Feature Ke Liye)
+
+**Kabhi bhi API key seedha code ke andar na likhein.** Render par ye Environment
+Variable ke through add karni hai:
+
+1. Render dashboard mein apni `trackfyp-backend` service kholein.
+2. Left menu mein **"Environment"** par click karein.
+3. **"Add Environment Variable"** dabayein.
+4. Key: `GEMINI_API_KEY`, Value: apni Google AI Studio wali key paste karein.
+5. **"Save Changes"** — Render khud service ko restart kar dega naye key ke sath.
+
+Is tareeqe se key kahin bhi publicly (GitHub, code) nazar nahi aati — sirf
+Render ke private settings mein rehti hai.
+
+## Endpoints (Overview)
+
+- `GET /api/download?url=<link>` — video download link
+- `GET /api/analyze?url=<link>` — Growth Score + diagnosis (public metadata se)
+- `GET /api/trending?country=pk|in|ae|us|uk|global` — trending hashtags
+- `POST /api/premium-analyze` — video upload, AI se virality score (multipart/form-data, field name "video")

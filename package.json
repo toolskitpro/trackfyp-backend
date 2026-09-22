@@ -1,7 +1,7 @@
 {
   "name": "trackfyp-backend",
   "version": "1.0.0",
-  "description": "TrackFyp backend - Video Downloader service",
+  "description": "TrackFyp backend - Video Downloader, Analysis, Trending, Premium AI",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,6 +9,9 @@
   "dependencies": {
     "express": "^4.19.2",
     "axios": "^1.7.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.3"
   }
 }
