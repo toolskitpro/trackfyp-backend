@@ -1,0 +1,14 @@
+{
+  "name": "trackfyp-backend",
+  "version": "1.0.0",
+  "description": "TrackFyp backend - Video Downloader service",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "axios": "^1.7.2",
+    "cors": "^2.8.5"
+  }
+}
