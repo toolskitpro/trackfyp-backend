@@ -21,13 +21,11 @@ const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 50 * 1024 * 1024 
 
 const PORT = process.env.PORT || 3000;
 
-// ---- Supabase client (subscriber database) ----
 const supabase =
   process.env.SUPABASE_URL && process.env.SUPABASE_KEY
     ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
     : null;
 
-// ---- Safepay plan IDs (from Safepay dashboard) ----
 const SAFEPAY_PLANS = {
   basic_pkr: "plan_5737def5-02dc-4d37-8569-05bbca09bb63",
   unlimited_pkr: "plan_6ee81df9-8790-4d77-9e8e-099e701574a0",
@@ -35,15 +33,28 @@ const SAFEPAY_PLANS = {
   unlimited_usd: "plan_0be661f5-72b3-45f6-ac41-a06ec364fdc4",
 };
 
-// Safepay sandbox base URL (switch to production URL once approved)
+const PLAN_PRICES = {
+  basic_pkr: { amount: 299, currency: "PKR" },
+  unlimited_pkr: { amount: 499, currency: "PKR" },
+  basic_usd: { amount: 2.99, currency: "USD" },
+  unlimited_usd: { amount: 4.99, currency: "USD" },
+};
+
 const SAFEPAY_BASE_URL = "https://sandbox.api.getsafepay.com";
 
-// Health check
 app.get("/", (req, res) => {
   res.json({ status: "TrackFyp backend is running" });
 });
 
-// ---- Shared helper: TikTok video page se poora itemStruct nikalna ----
+function normalizeUrl(url) {
+  if (!url) return url;
+  url = url.trim();
+  if (!/^https?:\/\//i.test(url)) {
+    url = "https://" + url;
+  }
+  return url;
+}
+
 async function fetchTikTokItem(videoUrl) {
   const response = await axios.get(videoUrl, {
     headers: {
@@ -65,9 +76,27 @@ async function fetchTikTokItem(videoUrl) {
   return item;
 }
 
-// ---- /api/download?url=<tiktok video link> ----
+async function fetchTikTokProfile(profileUrl) {
+  const response = await axios.get(profileUrl, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    },
+    maxRedirects: 5,
+  });
+  const html = response.data;
+  const match = html.match(
+    /<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)<\/script>/s
+  );
+  if (!match) throw new Error("PAGE_STRUCTURE_CHANGED");
+  const jsonData = JSON.parse(match[1]);
+  const userInfo = jsonData?.__DEFAULT_SCOPE__?.["webapp.user-detail"]?.userInfo;
+  if (!userInfo) throw new Error("NO_PROFILE_DATA");
+  return userInfo;
+}
+
 app.get("/api/download", async (req, res) => {
-  const videoUrl = req.query.url;
+  const videoUrl = normalizeUrl(req.query.url);
   if (!videoUrl || !videoUrl.includes("tiktok.com")) {
     return res.status(400).json({ error: "Sahi TikTok video link daalein." });
   }
@@ -86,17 +115,20 @@ app.get("/api/download", async (req, res) => {
   } catch (err) {
     console.error(err.message);
     res.status(500).json({
-      error:
-        "Video process karne mein masla hua. Link check karein ya thodi der baad try karein.",
+      error: "Video process karne mein masla hua. Link check karein ya thodi der baad try karein.",
     });
   }
 });
 
-// ---- /api/analyze?url=<tiktok video link> ----
 app.get("/api/analyze", async (req, res) => {
-  const videoUrl = req.query.url;
+  const videoUrl = normalizeUrl(req.query.url);
   if (!videoUrl || !videoUrl.includes("tiktok.com")) {
     return res.status(400).json({ error: "Sahi TikTok video link daalein." });
+  }
+  if (!videoUrl.includes("/video/")) {
+    return res.status(400).json({
+      error: "Ye ek profile/channel link lag raha hai. Channel analysis ke liye 'Channel' tab use karein, ya ek specific video ka link daalein.",
+    });
   }
   try {
     const item = await fetchTikTokItem(videoUrl);
@@ -169,7 +201,47 @@ app.get("/api/analyze", async (req, res) => {
   }
 });
 
-// ---- /api/trending?country=pk|in|ae|us|uk|global ----
+app.get("/api/channel-analyze", async (req, res) => {
+  const profileUrl = normalizeUrl(req.query.url);
+  if (!profileUrl || !profileUrl.includes("tiktok.com/@")) {
+    return res.status(400).json({ error: "Sahi TikTok profile link daalein (jaise tiktok.com/@username)." });
+  }
+  try {
+    const userInfo = await fetchTikTokProfile(profileUrl);
+    const stats = userInfo.stats || userInfo.statsV2 || {};
+    const followerCount = Number(stats.followerCount) || 0;
+    const followingCount = Number(stats.followingCount) || 0;
+    const heartCount = Number(stats.heartCount || stats.heart) || 0;
+    const videoCount = Number(stats.videoCount) || 0;
+
+    const avgLikesPerVideo = videoCount > 0 ? Math.round(heartCount / videoCount) : 0;
+
+    const diagnosis = [];
+    if (videoCount < 10) {
+      diagnosis.push({ type: "warn", text: "Abhi sirf " + videoCount + " videos hain — consistent posting se growth tez ho sakti hai." });
+    } else {
+      diagnosis.push({ type: "good", text: videoCount + " videos post ki ja chuki hain — achi consistency ka sign hai." });
+    }
+
+    if (followerCount > 1000 && avgLikesPerVideo < followerCount * 0.02) {
+      diagnosis.push({ type: "bad", text: "Followers ke muqable average likes kam hain — ho sakta hai followers inactive hon ya content unke interest se match na kare." });
+    } else if (avgLikesPerVideo > 0) {
+      diagnosis.push({ type: "good", text: "Average " + avgLikesPerVideo + " likes per video — followers active lagte hain." });
+    }
+
+    if (followingCount > followerCount && followerCount < 1000) {
+      diagnosis.push({ type: "warn", text: "Following count, followers se zyada hai — organic growth par focus karein." });
+    }
+
+    res.json({ success: true, followerCount, followingCount, heartCount, videoCount, avgLikesPerVideo, diagnosis });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({
+      error: "Channel analysis mein masla hua. Link check karein ya thodi der baad try karein.",
+    });
+  }
+});
+
 const COUNTRY_MAP = { pk: "PK", in: "IN", ae: "AE", us: "US", uk: "GB", global: "" };
 app.get("/api/trending", async (req, res) => {
   const country = COUNTRY_MAP[req.query.country] ?? "";
@@ -177,42 +249,27 @@ app.get("/api/trending", async (req, res) => {
     const response = await axios.get(
       "https://ads.tiktok.com/creative_radar_api/v1/popular_trend/hashtag/list",
       {
-        params: {
-          page: 1,
-          limit: 10,
-          period: 7,
-          country_code: country,
-          sort_by: "popular",
-        },
+        params: { page: 1, limit: 10, period: 7, country_code: country, sort_by: "popular" },
         headers: { "User-Agent": "Mozilla/5.0" },
       }
     );
     const list = response.data?.data?.list || [];
     res.json({
       success: true,
-      trends: list.map((t) => ({
-        hashtag: t.hashtag_name,
-        posts: t.video_views || t.publish_cnt || null,
-      })),
+      trends: list.map((t) => ({ hashtag: t.hashtag_name, posts: t.video_views || t.publish_cnt || null })),
     });
   } catch (err) {
     console.error(err.message);
     res.status(500).json({
-      error:
-        "Trending data abhi fetch nahi ho saka — TikTok ne format badla ho sakta hai. Thodi der baad try karein.",
+      error: "Trending data abhi fetch nahi ho saka — TikTok ne format badla ho sakta hai. Thodi der baad try karein.",
     });
   }
 });
 
-// =====================================================
-// PREMIUM (AI Analysis) — ab subscription-gated hai
-// =====================================================
-
-// Check karta hai ke ye email active subscriber hai ya nahi (ya admin/test email hai)
 async function isActiveSubscriber(email) {
   if (!email) return false;
   if (process.env.ADMIN_EMAIL && email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase()) {
-    return true; // apni testing ke liye bypass
+    return true;
   }
   if (!supabase) return false;
   const { data, error } = await supabase
@@ -224,51 +281,32 @@ async function isActiveSubscriber(email) {
   return data.status === "active";
 }
 
-// ---- /api/premium-analyze (POST, multipart: video, email) ----
 app.post("/api/premium-analyze", upload.single("video"), async (req, res) => {
   const email = req.body.email;
-  if (!req.file) {
-    return res.status(400).json({ error: "Video file nahi mili." });
-  }
-  if (!email) {
-    return res.status(400).json({ error: "Email zaroori hai." });
-  }
+  if (!req.file) return res.status(400).json({ error: "Video file nahi mili." });
+  if (!email) return res.status(400).json({ error: "Email zaroori hai." });
 
   const allowed = await isActiveSubscriber(email);
   if (!allowed) {
     fs.unlinkSync(req.file.path);
-    return res.status(402).json({
-      error: "Ye email Premium subscriber nahi hai. Pehle subscribe karein.",
-    });
+    return res.status(402).json({ error: "Ye email Premium subscriber nahi hai. Pehle subscribe karein." });
   }
-
   if (!process.env.GEMINI_API_KEY) {
-    return res.status(500).json({
-      error: "Server par AI key set nahi hai.",
-    });
+    return res.status(500).json({ error: "Server par AI key set nahi hai." });
   }
 
   const framesDir = fs.mkdtempSync(path.join(os.tmpdir(), "frames-"));
-
   try {
     await new Promise((resolve, reject) => {
       ffmpeg(req.file.path)
         .on("end", resolve)
         .on("error", reject)
-        .screenshots({
-          count: 4,
-          timemarks: ["0", "1.5", "3", "5"],
-          folder: framesDir,
-          filename: "frame-%i.png",
-        });
+        .screenshots({ count: 4, timemarks: ["0", "1.5", "3", "5"], folder: framesDir, filename: "frame-%i.png" });
     });
 
     const frameFiles = fs.readdirSync(framesDir).filter((f) => f.endsWith(".png"));
     const imageParts = frameFiles.map((f) => ({
-      inline_data: {
-        mime_type: "image/png",
-        data: fs.readFileSync(path.join(framesDir, f)).toString("base64"),
-      },
+      inline_data: { mime_type: "image/png", data: fs.readFileSync(path.join(framesDir, f)).toString("base64") },
     }));
 
     const prompt = `Aap ek TikTok content expert hain. Ye video ke shuruati frames hain (pehle 5 second). Ye batayein (Roman Urdu mein, JSON format mein):
@@ -285,7 +323,6 @@ Sirf JSON return karein, kuch aur text nahi.`;
     const rawText = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
     const cleaned = rawText.replace(/```json|```/g, "").trim();
     const result = JSON.parse(cleaned);
-
     res.json({ success: true, ...result });
   } catch (err) {
     console.error(err.message);
@@ -296,17 +333,12 @@ Sirf JSON return karein, kuch aur text nahi.`;
   }
 });
 
-// =====================================================
-// PAYMENTS — Safepay checkout + webhook
-// =====================================================
-
-// ---- /api/create-checkout (POST: { email, plan }) ----
-// plan = "basic_pkr" | "unlimited_pkr" | "basic_usd" | "unlimited_usd"
 app.post("/api/create-checkout", async (req, res) => {
   const { email, plan } = req.body;
   const planId = SAFEPAY_PLANS[plan];
+  const priceInfo = PLAN_PRICES[plan];
 
-  if (!email || !planId) {
+  if (!email || !planId || !priceInfo) {
     return res.status(400).json({ error: "Email aur valid plan zaroori hai." });
   }
   if (!process.env.SAFEPAY_SECRET_KEY || !process.env.SAFEPAY_PUBLIC_KEY) {
@@ -314,18 +346,17 @@ app.post("/api/create-checkout", async (req, res) => {
   }
 
   try {
-    // NOTE: Ye Safepay ka checkout-session init call hai. Agar Safepay ka
-    // exact response format alag nikla to isay test ke baad adjust karna hoga
-    // (bilkul jaisa Trending endpoint ke sath hua tha).
+    const amountInMinorUnits = Math.round(priceInfo.amount * 100);
+
     const initRes = await axios.post(
       `${SAFEPAY_BASE_URL}/order/v1/init`,
       {
-        merchant_api_key: process.env.SAFEPAY_PUBLIC_KEY,
-        intent: "CYBERSOURCE",
-        mode: "subscription",
-        plan_id: planId,
-        customer_email: email,
-        currency: plan.includes("usd") ? "USD" : "PKR",
+        client: process.env.SAFEPAY_PUBLIC_KEY,
+        amount: amountInMinorUnits,
+        currency: priceInfo.currency,
+        environment: "sandbox",
+        order_id: `${plan}-${Date.now()}`,
+        metadata: { email, plan_id: planId, plan },
       },
       {
         headers: {
@@ -335,12 +366,12 @@ app.post("/api/create-checkout", async (req, res) => {
       }
     );
 
-    const trackerToken = initRes.data?.data?.tracker?.token || initRes.data?.tracker;
+    const trackerToken = initRes.data?.data?.tracker?.token || initRes.data?.data?.token || initRes.data?.tracker;
     if (!trackerToken) {
+      console.error("No tracker token in response:", JSON.stringify(initRes.data));
       return res.status(500).json({ error: "Checkout session nahi ban saki." });
     }
 
-    // Pre-register this email in Supabase as "pending" so webhook can update it later
     if (supabase) {
       await supabase.from("subscribers").upsert({
         email: email.toLowerCase(),
@@ -353,22 +384,17 @@ app.post("/api/create-checkout", async (req, res) => {
     const checkoutUrl = `https://sandbox.getsafepay.com/checkout?tracker=${trackerToken}`;
     res.json({ success: true, checkoutUrl });
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({
-      error: "Checkout banane mein masla hua. Thodi der baad try karein.",
-    });
+    console.error("Safepay error:", JSON.stringify(err.response?.data || err.message));
+    res.status(500).json({ error: "Checkout banane mein masla hua. Thodi der baad try karein." });
   }
 });
 
-// ---- /api/safepay-webhook (POST) ----
-// Safepay dashboard mein is URL ko webhook endpoint ki tarah add karna hoga:
-// https://trackfyp-backend.onrender.com/api/safepay-webhook
 app.post("/api/safepay-webhook", async (req, res) => {
   try {
     const event = req.body;
     console.log("Safepay webhook received:", JSON.stringify(event));
 
-    const email = event?.data?.customer_email || event?.customer_email;
+    const email = event?.data?.metadata?.email || event?.data?.customer_email;
     const status = event?.data?.state === "TRACKER_ENDED" || event?.status === "success" ? "active" : "inactive";
 
     if (email && supabase) {
@@ -378,7 +404,6 @@ app.post("/api/safepay-webhook", async (req, res) => {
         updated_at: new Date().toISOString(),
       });
     }
-
     res.status(200).json({ received: true });
   } catch (err) {
     console.error(err.message);
@@ -386,7 +411,6 @@ app.post("/api/safepay-webhook", async (req, res) => {
   }
 });
 
-// ---- /api/check-subscription?email=... ----
 app.get("/api/check-subscription", async (req, res) => {
   const email = req.query.email;
   const active = await isActiveSubscriber(email);
