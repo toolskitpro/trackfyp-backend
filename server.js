@@ -266,6 +266,55 @@ app.get("/api/trending", async (req, res) => {
   }
 });
 
+// ---- /api/shadowban-check?url=<tiktok profile link> ----
+// Honest note: ye TikTok ka real internal "shadowban status" nahi de sakta
+// (koi bhi website ye nahi de sakti). Ye sirf current public engagement
+// ratios se ek estimate banata hai.
+app.get("/api/shadowban-check", async (req, res) => {
+  const profileUrl = normalizeUrl(req.query.url);
+  if (!profileUrl || !profileUrl.includes("tiktok.com/@")) {
+    return res.status(400).json({ error: "Sahi TikTok profile link daalein." });
+  }
+  try {
+    const userInfo = await fetchTikTokProfile(profileUrl);
+    const stats = userInfo.stats || userInfo.statsV2 || {};
+    const followerCount = Number(stats.followerCount) || 0;
+    const heartCount = Number(stats.heartCount || stats.heart) || 0;
+    const videoCount = Number(stats.videoCount) || 0;
+    const avgLikesPerVideo = videoCount > 0 ? heartCount / videoCount : 0;
+    const likeRatio = followerCount > 0 ? avgLikesPerVideo / followerCount : 0;
+
+    let riskLevel, riskReason;
+    if (followerCount < 50) {
+      riskLevel = "Low Risk";
+      riskReason = "Account chhota hai — abhi reliable estimate ke liye kaafi data nahi.";
+    } else if (likeRatio < 0.01) {
+      riskLevel = "High Risk";
+      riskReason = "Followers ke muqable average likes bohot kam hain — reach suppression ya inactive followers ka sign ho sakta hai.";
+    } else if (likeRatio < 0.03) {
+      riskLevel = "Medium Risk";
+      riskReason = "Engagement ratio normal se thora kam hai — content/posting consistency par dhyan dein.";
+    } else {
+      riskLevel = "Low Risk";
+      riskReason = "Engagement ratio healthy hai — koi suppression ka clear sign nahi mila.";
+    }
+
+    res.json({
+      success: true,
+      riskLevel,
+      riskReason,
+      followerCount,
+      avgLikesPerVideo: Math.round(avgLikesPerVideo),
+      videoCount,
+    });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({
+      error: "Check karne mein masla hua. Link verify karein ya thodi der baad try karein.",
+    });
+  }
+});
+
 async function isActiveSubscriber(email) {
   if (!email) return false;
   if (process.env.ADMIN_EMAIL && email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase()) {
