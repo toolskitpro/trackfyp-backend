@@ -125,11 +125,6 @@ app.get("/api/analyze", async (req, res) => {
   if (!videoUrl || !videoUrl.includes("tiktok.com")) {
     return res.status(400).json({ error: "Sahi TikTok video link daalein." });
   }
-  if (!videoUrl.includes("/video/")) {
-    return res.status(400).json({
-      error: "Ye ek profile/channel link lag raha hai. Channel analysis ke liye 'Channel' tab use karein, ya ek specific video ka link daalein.",
-    });
-  }
   try {
     const item = await fetchTikTokItem(videoUrl);
 
@@ -195,6 +190,11 @@ app.get("/api/analyze", async (req, res) => {
     });
   } catch (err) {
     console.error(err.message);
+    if (err.message === "NO_ITEM_DATA") {
+      return res.status(400).json({
+        error: "Ye video link nahi lag raha — agar ye profile/channel link hai to 'Channel' tab use karein.",
+      });
+    }
     res.status(500).json({
       error: "Analysis mein masla hua. Link check karein ya thodi der baad try karein.",
     });
