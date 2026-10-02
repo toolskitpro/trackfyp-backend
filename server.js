@@ -201,6 +201,37 @@ app.get("/api/analyze", async (req, res) => {
   }
 });
 
+// ---- /api/download-file?url=<tiktok video link> ----
+// Video ko seedha browser se TikTok CDN se khulwane ki bajaye, backend khud
+// fetch karke stream kar deta hai — isse TikTok ka "Access Denied" nahi aata.
+app.get("/api/download-file", async (req, res) => {
+  const videoUrl = normalizeUrl(req.query.url);
+  if (!videoUrl || !videoUrl.includes("tiktok.com")) {
+    return res.status(400).send("Sahi TikTok video link daalein.");
+  }
+  try {
+    const item = await fetchTikTokItem(videoUrl);
+    const noWatermarkUrl = item.video?.playAddr || item.video?.downloadAddr;
+    if (!noWatermarkUrl) return res.status(500).send("Download link nahi mila.");
+
+    const videoStream = await axios.get(noWatermarkUrl, {
+      responseType: "stream",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        Referer: "https://www.tiktok.com/",
+      },
+    });
+
+    res.setHeader("Content-Disposition", 'attachment; filename="trackfyp-video.mp4"');
+    res.setHeader("Content-Type", "video/mp4");
+    videoStream.data.pipe(res);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Video download mein masla hua.");
+  }
+});
+
 app.get("/api/channel-analyze", async (req, res) => {
   const profileUrl = normalizeUrl(req.query.url);
   if (!profileUrl || !profileUrl.includes("tiktok.com/@")) {
@@ -415,10 +446,24 @@ app.post("/api/create-checkout", async (req, res) => {
       }
     );
 
+    console.log("Safepay init response:", JSON.stringify(initRes.data));
+
+    // Try every likely field name for the actual checkout URL/token Safepay returns
     const trackerToken = initRes.data?.data?.tracker?.token || initRes.data?.data?.token || initRes.data?.tracker;
-    if (!trackerToken) {
-      console.error("No tracker token in response:", JSON.stringify(initRes.data));
-      return res.status(500).json({ error: "Checkout session nahi ban saki." });
+    const directUrl =
+      initRes.data?.data?.checkout_url ||
+      initRes.data?.data?.url ||
+      initRes.data?.data?.redirect_url ||
+      initRes.data?.checkout_url;
+
+    let checkoutUrl = directUrl;
+    if (!checkoutUrl && trackerToken) {
+      checkoutUrl = `https://sandbox.getsafepay.com/checkout?beacon=${trackerToken}`;
+    }
+
+    if (!checkoutUrl) {
+      console.error("No checkout URL/token found in response:", JSON.stringify(initRes.data));
+      return res.status(500).json({ error: "Checkout session nahi ban saki — Render logs check karein." });
     }
 
     if (supabase) {
@@ -430,7 +475,6 @@ app.post("/api/create-checkout", async (req, res) => {
       });
     }
 
-    const checkoutUrl = `https://sandbox.getsafepay.com/checkout?tracker=${trackerToken}`;
     res.json({ success: true, checkoutUrl });
   } catch (err) {
     console.error("Safepay error:", JSON.stringify(err.response?.data || err.message));
